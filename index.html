@@ -1,0 +1,59 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DoReMimis AI Beatmap Generator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <div class="eyebrow">AI-POWERED RHYTHM CHART CREATION</div>
+      <h1>DoReMimis</h1>
+      <p>Turn your music into a four-lane rhythm game beatmap.</p>
+    </header>
+
+    <section class="panel">
+      <h2>Generate a Beatmap</h2>
+
+      <form id="beatmapForm">
+        <label for="audio">Upload Song</label>
+        <input id="audio" type="file" accept=".wav,.mp3,audio/*" required>
+
+        <div class="fields">
+          <div>
+            <label for="bpm">BPM</label>
+            <input id="bpm" type="number" value="120" min="1" step="any" required>
+          </div>
+          <div>
+            <label for="offset">Offset (ms)</label>
+            <input id="offset" type="number" value="0" step="any">
+          </div>
+        </div>
+
+        <button type="submit" id="generateBtn">
+          Generate AI Beatmap
+        </button>
+      </form>
+
+      <p id="status" role="status" aria-live="polite">
+        Select a song to get started.
+      </p>
+
+      <div id="results" hidden>
+        <h3>Your Beatmap</h3>
+        <a id="osuDownload" href="#">Download osu!mania Beatmap</a>
+        <a id="csvDownload" href="#">Download Unreal CSV</a>
+      </div>
+    </section>
+
+    <footer>
+      Powered by MERT + DDPM
+    </footer>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
