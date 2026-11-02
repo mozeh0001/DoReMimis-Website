@@ -19,12 +19,17 @@ const csvDownload = document.getElementById("csvDownload");
 
 const STATUS_INTERVAL_MS = 10000;
 const MAX_STATUS_CHECKS = 360;
+const STORAGE_KEY = "doremimis_latest_generation";
 
 let activeGeneration = false;
 let completedUploadId = null;
 let cachedZipBlob = null;
 let cachedZipUploadId = null;
 let downloadInProgress = false;
+
+// --------------------------------------------------
+// DOWNLOAD BUTTONS
+// --------------------------------------------------
 
 const downloadBtn = document.createElement("button");
 downloadBtn.type = "button";
@@ -53,6 +58,30 @@ function showDownloads(uploadId) {
   downloadBtn.hidden = false;
 }
 
+function rememberGeneration(uploadId) {
+  try {
+    localStorage.setItem(STORAGE_KEY, uploadId);
+  } catch (error) {
+    console.warn("Could not save generation ID:", error);
+  }
+}
+
+function getRememberedGeneration() {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function forgetGeneration() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Browser storage may be unavailable.
+  }
+}
+
 // Download the generated ZIP securely through Cloudflare.
 async function fetchBeatmapZip(uploadId) {
   if (cachedZipBlob && cachedZipUploadId === uploadId) {
@@ -75,7 +104,7 @@ async function fetchBeatmapZip(uploadId) {
       const data = await response.json();
       message = data.error || message;
     } catch {
-      // Keep the HTTP error if the response isn't JSON.
+      // Keep HTTP error if response isn't JSON.
     }
 
     throw new Error(message);
@@ -146,15 +175,14 @@ async function extractBeatmapFile(zipBlob, extension) {
 
   if (matchingFiles.length > 1) {
     throw new Error(
-      `Multiple ${extension} files were found. Please download the ZIP instead.`
+      `Multiple ${extension} files were found. Download the ZIP instead.`
     );
   }
 
   const file = matchingFiles[0];
-  const blob = await file.async("blob");
 
   return {
-    blob,
+    blob: await file.async("blob"),
     filename: file.name.split("/").pop()
   };
 }
@@ -190,8 +218,7 @@ async function handleDownload(downloadType) {
       saveBlob(file.blob, file.filename);
     }
 
-    statusText.textContent =
-      "Your beatmap download has started!";
+    statusText.textContent = "Your beatmap download has started!";
 
   } catch (error) {
     statusText.textContent =
@@ -199,7 +226,6 @@ async function handleDownload(downloadType) {
 
   } finally {
     downloadInProgress = false;
-
     osuDownload.style.pointerEvents = "";
     csvDownload.style.pointerEvents = "";
     downloadBtn.disabled = false;
@@ -220,9 +246,8 @@ downloadBtn.addEventListener("click", () => {
   handleDownload("zip");
 });
 
-// --------------------------------------------------
-// GITHUB LOGIN
-// --------------------------------------------------
+
+// github login
 
 async function checkGitHubLogin() {
   try {
@@ -241,20 +266,20 @@ async function checkGitHubLogin() {
       loggedIn.hidden = false;
       githubUsername.textContent = data.login;
 
-      if (!activeGeneration) {
-        statusText.textContent =
-          `Welcome, ${data.login}! Select a song to get started.`;
-      }
+      statusText.textContent =
+        `Welcome, ${data.login}! Checking your latest beatmap...`;
+
+      await restoreGeneration();
 
     } else {
       loggedOut.hidden = false;
       loggedIn.hidden = true;
       githubUsername.textContent = "";
 
-      if (!activeGeneration) {
-        statusText.textContent =
-          "Please sign in with GitHub to get started.";
-      }
+      hideDownloads();
+
+      statusText.textContent =
+        "Please sign in with GitHub to get started.";
     }
 
   } catch (error) {
@@ -262,12 +287,108 @@ async function checkGitHubLogin() {
     loggedIn.hidden = true;
     githubUsername.textContent = "";
 
+    hideDownloads();
+
+    statusText.textContent =
+      "Could not check GitHub login: " + error.message;
+  }
+}
+
+// restore previous generation
+
+async function restoreGeneration() {
+  const uploadId = getRememberedGeneration();
+
+  if (!uploadId) {
     if (!activeGeneration) {
       statusText.textContent =
-        "Could not check GitHub login: " + error.message;
+        "Select a song to generate your first beatmap.";
+    }
+    return;
+  }
+
+  if (!/^[0-9a-f]{64}$/.test(uploadId)) {
+    forgetGeneration();
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/status?uploadId=${encodeURIComponent(uploadId)}`,
+      {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store"
+      }
+    );
+
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 403) {
+        forgetGeneration();
+        hideDownloads();
+
+        if (!activeGeneration) {
+          statusText.textContent =
+            "Your previous beatmap is no longer available. " +
+            "You can generate a new one.";
+        }
+        return;
+      }
+
+      throw new Error(`Status check failed (${response.status}).`);
+    }
+
+    const data = await response.json();
+
+    if (activeGeneration) return;
+
+    if (data.status === "completed") {
+      showDownloads(uploadId);
+
+      statusText.textContent =
+        "Your previous beatmap is ready! " +
+        "Choose .osu, .csv, or .zip to download.";
+
+    } else if (
+      data.status === "queued" ||
+      data.status === "generating"
+    ) {
+      statusText.textContent =
+        "Your previous beatmap is still generating. " +
+        "Resuming progress tracking...";
+
+      activeGeneration = true;
+      generateBtn.disabled = true;
+
+      try {
+        await monitorGeneration(uploadId);
+      } finally {
+        activeGeneration = false;
+        generateBtn.disabled = false;
+      }
+
+    } else if (data.status === "failed") {
+      forgetGeneration();
+
+      statusText.textContent =
+        "Your previous beatmap generation failed. " +
+        "You can try again.";
+
+    } else {
+      statusText.textContent =
+        "Unable to determine your previous beatmap status.";
+    }
+
+  } catch (error) {
+    if (!activeGeneration) {
+      statusText.textContent =
+        "Could not restore your previous beatmap: " +
+        error.message;
     }
   }
 }
+
+// generation status tracking
 
 function wait(milliseconds) {
   return new Promise(resolve => {
@@ -307,6 +428,7 @@ async function monitorGeneration(uploadId) {
         }
 
         if (response.status === 404) {
+          forgetGeneration();
           throw new Error(
             "Your generation record has expired or was not found."
           );
@@ -337,8 +459,7 @@ async function monitorGeneration(uploadId) {
 
         case "generating":
           statusText.textContent =
-            "Generating your beatmap with MERT + DDPM. " +
-            "This usually takes a few minutes...";
+            "Generating your beatmap with MERT + DDPM...";
           break;
 
         case "completed":
@@ -355,6 +476,8 @@ async function monitorGeneration(uploadId) {
           return;
 
         case "failed":
+          forgetGeneration();
+
           statusText.textContent =
             "Beatmap generation failed. Check GitHub Actions logs.";
           return;
@@ -393,6 +516,8 @@ async function monitorGeneration(uploadId) {
   );
 }
 
+// audio upload and AI generation
+
 form.addEventListener("submit", async event => {
   event.preventDefault();
 
@@ -418,8 +543,7 @@ form.addEventListener("submit", async event => {
   }
 
   if (!Number.isFinite(offset) || Math.abs(offset) > 600000) {
-    statusText.textContent =
-      "Please enter a valid offset.";
+    statusText.textContent = "Please enter a valid offset.";
     return;
   }
 
@@ -501,6 +625,9 @@ form.addEventListener("submit", async event => {
       );
     }
 
+    // Remember the generation only after GitHub accepts it.
+    rememberGeneration(uploadData.uploadId);
+
     // Step 3: Monitor GitHub Actions.
     stage = "monitor";
 
@@ -532,6 +659,8 @@ form.addEventListener("submit", async event => {
     generateBtn.disabled = false;
   }
 });
+
+// initialize website
 
 hideDownloads();
 checkGitHubLogin();
