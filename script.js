@@ -31,9 +31,25 @@ form.addEventListener("submit", async (event) => {
 
   // A secure backend will be connected here later.
   // Never put a GitHub access token in browser JavaScript.
+  
+    try {
+    const response = await fetch(
+        "https://doremimis-api.magenmozeh1378.workers.dev/api/health"
+    );
 
-  statusText.textContent =
-    "Website interface ready! Cloud generation is not connected yet.";
+    if (!response.ok) {
+        throw new Error("Backend is unavailable.");
+    }
+
+    const data = await response.json();
+
+    statusText.textContent =
+        data.message + " AI generation will be connected next.";
+    } catch (error) {
+    statusText.textContent =
+        "Could not connect to the DoReMimis backend: " + error.message;
+    }
+
 
   generateBtn.disabled = false;
 });
