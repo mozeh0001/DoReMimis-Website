@@ -18,6 +18,102 @@ const STATUS_INTERVAL_MS = 10000;
 const MAX_STATUS_CHECKS = 360;
 
 let activeGeneration = false;
+let completedUploadId = null;
+
+// Create a download button for completed beatmaps.
+const downloadBtn = document.createElement("button");
+
+downloadBtn.type = "button";
+downloadBtn.textContent = "Download Beatmap (.zip)";
+downloadBtn.hidden = true;
+
+results.appendChild(downloadBtn);
+
+// Download the generated ZIP through Cloudflare.
+downloadBtn.addEventListener("click", async () => {
+  if (!completedUploadId) {
+    return;
+  }
+
+  downloadBtn.disabled = true;
+  downloadBtn.textContent = "Downloading...";
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/download?uploadId=${encodeURIComponent(completedUploadId)}`,
+      {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store"
+      }
+    );
+
+    if (!response.ok) {
+      let message = "Download failed.";
+
+      try {
+        const data = await response.json();
+        message = data.error || message;
+      } catch {
+        message = `Download failed (HTTP ${response.status}).`;
+      }
+
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+
+    // Verify the downloaded file is a ZIP archive.
+    if (blob.size < 4) {
+      throw new Error("Downloaded file is empty or invalid.");
+    }
+
+    const signature = new Uint8Array(
+      await blob.slice(0, 4).arrayBuffer()
+    );
+
+    if (
+      signature[0] !== 0x50 ||
+      signature[1] !== 0x4B ||
+      signature[2] !== 0x03 ||
+      signature[3] !== 0x04
+    ) {
+      throw new Error(
+        "The server did not return a valid ZIP archive."
+      );
+    }
+
+    // Create a temporary browser download URL.
+    const objectUrl = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+
+    link.href = objectUrl;
+    link.download =
+      `DoReMimis-${completedUploadId.slice(0, 8)}.zip`;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    // Release the temporary browser URL.
+    setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 60000);
+
+    statusText.textContent =
+      "Beatmap ZIP downloaded successfully! " +
+      "The archive contains your generated .osu and .csv files.";
+
+  } catch (error) {
+    statusText.textContent =
+      "Download failed: " + error.message;
+
+  } finally {
+    downloadBtn.disabled = false;
+    downloadBtn.textContent = "Download Beatmap (.zip)";
+  }
+});
 
 // Check whether the user is logged in with GitHub.
 async function checkGitHubLogin() {
@@ -41,6 +137,7 @@ async function checkGitHubLogin() {
         statusText.textContent =
           `Welcome, ${data.login}! Select a song to get started.`;
       }
+
     } else {
       loggedOut.hidden = false;
       loggedIn.hidden = true;
@@ -51,6 +148,7 @@ async function checkGitHubLogin() {
           "Please sign in with GitHub to get started.";
       }
     }
+
   } catch (error) {
     loggedOut.hidden = false;
     loggedIn.hidden = true;
@@ -65,7 +163,9 @@ async function checkGitHubLogin() {
 
 // Wait between GitHub Actions status checks.
 function wait(milliseconds) {
-  return new Promise(resolve => setTimeout(resolve, milliseconds));
+  return new Promise(resolve => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 // Monitor GitHub Actions until generation finishes.
@@ -102,7 +202,7 @@ async function monitorGeneration(uploadId) {
 
         if (response.status === 404) {
           throw new Error(
-            "Your temporary audio upload has expired or was not found."
+            "Your generation record has expired or was not found."
           );
         }
 
@@ -136,11 +236,22 @@ async function monitorGeneration(uploadId) {
           break;
 
         case "completed":
-          statusText.textContent =
-            "Beatmap generation completed successfully! " +
-            "Download buttons will be connected next.";
+          // Store the completed upload ID.
+          completedUploadId = uploadId;
 
-          console.log("Completed GitHub Actions run:", data.runId);
+          // Reveal the download button.
+          results.hidden = false;
+          downloadBtn.hidden = false;
+
+          statusText.textContent =
+            "Beatmap generation completed! " +
+            "Click Download Beatmap to get your .osu and .csv files.";
+
+          console.log(
+            "Completed GitHub Actions run:",
+            data.runId
+          );
+
           return;
 
         case "failed":
@@ -152,12 +263,13 @@ async function monitorGeneration(uploadId) {
           statusText.textContent =
             "Checking beatmap generation status...";
       }
+
     } catch (error) {
-      // Authentication and expired uploads require user action.
+      // Errors requiring the user to take action.
       if (
         error.message.includes("login session expired") ||
         error.message.includes("not authorized") ||
-        error.message.includes("audio upload has expired")
+        error.message.includes("generation record has expired")
       ) {
         throw error;
       }
@@ -166,7 +278,8 @@ async function monitorGeneration(uploadId) {
 
       if (consecutiveErrors >= 5) {
         throw new Error(
-          "Unable to check generation status: " + error.message
+          "Unable to check generation status: " +
+          error.message
         );
       }
 
@@ -189,7 +302,10 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  // Hide previous download results.
   results.hidden = true;
+  downloadBtn.hidden = true;
+  completedUploadId = null;
 
   const audioFile = audioInput.files[0];
   const bpm = Number(bpmInput.value);
@@ -214,7 +330,10 @@ form.addEventListener("submit", async (event) => {
 
   const MAX_FILE_SIZE = 2 * 1024 * 1024;
 
-  if (audioFile.size === 0 || audioFile.size > MAX_FILE_SIZE) {
+  if (
+    audioFile.size === 0 ||
+    audioFile.size > MAX_FILE_SIZE
+  ) {
     statusText.textContent =
       "Please select an MP3 or WAV smaller than 2 MB.";
     return;
@@ -233,11 +352,14 @@ form.addEventListener("submit", async (event) => {
     const formData = new FormData();
     formData.append("audio", audioFile);
 
-    const uploadResponse = await fetch(`${API_BASE}/api/upload`, {
-      method: "POST",
-      credentials: "include",
-      body: formData
-    });
+    const uploadResponse = await fetch(
+      `${API_BASE}/api/upload`,
+      {
+        method: "POST",
+        credentials: "include",
+        body: formData
+      }
+    );
 
     const uploadData = await uploadResponse.json();
 
