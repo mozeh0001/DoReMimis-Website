@@ -14,108 +14,216 @@ const loggedOut = document.getElementById("loggedOut");
 const loggedIn = document.getElementById("loggedIn");
 const githubUsername = document.getElementById("githubUsername");
 
+const osuDownload = document.getElementById("osuDownload");
+const csvDownload = document.getElementById("csvDownload");
+
 const STATUS_INTERVAL_MS = 10000;
 const MAX_STATUS_CHECKS = 360;
 
 let activeGeneration = false;
 let completedUploadId = null;
+let cachedZipBlob = null;
+let cachedZipUploadId = null;
+let downloadInProgress = false;
 
-// Create a download button for completed beatmaps.
 const downloadBtn = document.createElement("button");
-
 downloadBtn.type = "button";
-downloadBtn.textContent = "Download Beatmap (.zip)";
+downloadBtn.textContent = "Download Both Files (.zip)";
 downloadBtn.hidden = true;
 
 results.appendChild(downloadBtn);
 
-// Download the generated ZIP through Cloudflare.
-downloadBtn.addEventListener("click", async () => {
-  if (!completedUploadId) {
+function hideDownloads() {
+  results.hidden = true;
+  osuDownload.hidden = true;
+  csvDownload.hidden = true;
+  downloadBtn.hidden = true;
+
+  completedUploadId = null;
+  cachedZipBlob = null;
+  cachedZipUploadId = null;
+}
+
+function showDownloads(uploadId) {
+  completedUploadId = uploadId;
+
+  results.hidden = false;
+  osuDownload.hidden = false;
+  csvDownload.hidden = false;
+  downloadBtn.hidden = false;
+}
+
+// Download the generated ZIP securely through Cloudflare.
+async function fetchBeatmapZip(uploadId) {
+  if (cachedZipBlob && cachedZipUploadId === uploadId) {
+    return cachedZipBlob;
+  }
+
+  const response = await fetch(
+    `${API_BASE}/api/download?uploadId=${encodeURIComponent(uploadId)}`,
+    {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store"
+    }
+  );
+
+  if (!response.ok) {
+    let message = `Download failed (HTTP ${response.status}).`;
+
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch {
+      // Keep the HTTP error if the response isn't JSON.
+    }
+
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+
+  if (blob.size < 4) {
+    throw new Error("Downloaded ZIP is empty or invalid.");
+  }
+
+  const signature = new Uint8Array(
+    await blob.slice(0, 4).arrayBuffer()
+  );
+
+  if (
+    signature[0] !== 0x50 ||
+    signature[1] !== 0x4b ||
+    signature[2] !== 0x03 ||
+    signature[3] !== 0x04
+  ) {
+    throw new Error("Server did not return a valid ZIP archive.");
+  }
+
+  cachedZipBlob = blob;
+  cachedZipUploadId = uploadId;
+
+  return blob;
+}
+
+// Trigger a browser download from a Blob.
+function saveBlob(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = objectUrl;
+  link.download = filename;
+
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+  }, 60000);
+}
+
+// Extract an individual file from the ZIP using JSZip.
+async function extractBeatmapFile(zipBlob, extension) {
+  if (typeof JSZip === "undefined") {
+    throw new Error(
+      "ZIP extraction library failed to load. Please refresh the page."
+    );
+  }
+
+  const zip = await JSZip.loadAsync(zipBlob);
+
+  const matchingFiles = Object.values(zip.files).filter(file =>
+    !file.dir &&
+    file.name.toLowerCase().endsWith(extension)
+  );
+
+  if (matchingFiles.length === 0) {
+    throw new Error(
+      `No ${extension} file was found in the generated ZIP.`
+    );
+  }
+
+  if (matchingFiles.length > 1) {
+    throw new Error(
+      `Multiple ${extension} files were found. Please download the ZIP instead.`
+    );
+  }
+
+  const file = matchingFiles[0];
+  const blob = await file.async("blob");
+
+  return {
+    blob,
+    filename: file.name.split("/").pop()
+  };
+}
+
+// Prevent overlapping downloads.
+async function handleDownload(downloadType) {
+  if (!completedUploadId || downloadInProgress) {
     return;
   }
 
+  downloadInProgress = true;
+
+  osuDownload.style.pointerEvents = "none";
+  csvDownload.style.pointerEvents = "none";
   downloadBtn.disabled = true;
-  downloadBtn.textContent = "Downloading...";
 
   try {
-    const response = await fetch(
-      `${API_BASE}/api/download?uploadId=${encodeURIComponent(completedUploadId)}`,
-      {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store"
-      }
-    );
+    statusText.textContent = "Preparing your download...";
 
-    if (!response.ok) {
-      let message = "Download failed.";
+    const zipBlob = await fetchBeatmapZip(completedUploadId);
 
-      try {
-        const data = await response.json();
-        message = data.error || message;
-      } catch {
-        message = `Download failed (HTTP ${response.status}).`;
-      }
-
-      throw new Error(message);
-    }
-
-    const blob = await response.blob();
-
-    // Verify the downloaded file is a ZIP archive.
-    if (blob.size < 4) {
-      throw new Error("Downloaded file is empty or invalid.");
-    }
-
-    const signature = new Uint8Array(
-      await blob.slice(0, 4).arrayBuffer()
-    );
-
-    if (
-      signature[0] !== 0x50 ||
-      signature[1] !== 0x4B ||
-      signature[2] !== 0x03 ||
-      signature[3] !== 0x04
-    ) {
-      throw new Error(
-        "The server did not return a valid ZIP archive."
+    if (downloadType === "zip") {
+      saveBlob(
+        zipBlob,
+        `DoReMimis-${completedUploadId.slice(0, 8)}.zip`
       );
+    } else {
+      const file = await extractBeatmapFile(
+        zipBlob,
+        downloadType
+      );
+
+      saveBlob(file.blob, file.filename);
     }
-
-    // Create a temporary browser download URL.
-    const objectUrl = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-
-    link.href = objectUrl;
-    link.download =
-      `DoReMimis-${completedUploadId.slice(0, 8)}.zip`;
-
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-
-    // Release the temporary browser URL.
-    setTimeout(() => {
-      URL.revokeObjectURL(objectUrl);
-    }, 60000);
 
     statusText.textContent =
-      "Beatmap ZIP downloaded successfully! " +
-      "The archive contains your generated .osu and .csv files.";
+      "Your beatmap download has started!";
 
   } catch (error) {
     statusText.textContent =
       "Download failed: " + error.message;
 
   } finally {
+    downloadInProgress = false;
+
+    osuDownload.style.pointerEvents = "";
+    csvDownload.style.pointerEvents = "";
     downloadBtn.disabled = false;
-    downloadBtn.textContent = "Download Beatmap (.zip)";
   }
+}
+
+osuDownload.addEventListener("click", event => {
+  event.preventDefault();
+  handleDownload(".osu");
 });
 
-// Check whether the user is logged in with GitHub.
+csvDownload.addEventListener("click", event => {
+  event.preventDefault();
+  handleDownload(".csv");
+});
+
+downloadBtn.addEventListener("click", () => {
+  handleDownload("zip");
+});
+
+// --------------------------------------------------
+// GITHUB LOGIN
+// --------------------------------------------------
+
 async function checkGitHubLogin() {
   try {
     const response = await fetch(`${API_BASE}/api/me`, {
@@ -161,14 +269,12 @@ async function checkGitHubLogin() {
   }
 }
 
-// Wait between GitHub Actions status checks.
 function wait(milliseconds) {
   return new Promise(resolve => {
     setTimeout(resolve, milliseconds);
   });
 }
 
-// Monitor GitHub Actions until generation finishes.
 async function monitorGeneration(uploadId) {
   let consecutiveErrors = 0;
 
@@ -236,22 +342,16 @@ async function monitorGeneration(uploadId) {
           break;
 
         case "completed":
-          // Store the completed upload ID.
-          completedUploadId = uploadId;
-
-          // Reveal the download button.
-          results.hidden = false;
-          downloadBtn.hidden = false;
+          showDownloads(uploadId);
 
           statusText.textContent =
             "Beatmap generation completed! " +
-            "Click Download Beatmap to get your .osu and .csv files.";
+            "Choose your preferred download format.";
 
           console.log(
             "Completed GitHub Actions run:",
             data.runId
           );
-
           return;
 
         case "failed":
@@ -265,7 +365,6 @@ async function monitorGeneration(uploadId) {
       }
 
     } catch (error) {
-      // Errors requiring the user to take action.
       if (
         error.message.includes("login session expired") ||
         error.message.includes("not authorized") ||
@@ -294,18 +393,14 @@ async function monitorGeneration(uploadId) {
   );
 }
 
-// Handle song uploads and automatically start AI generation.
-form.addEventListener("submit", async (event) => {
+form.addEventListener("submit", async event => {
   event.preventDefault();
 
   if (activeGeneration) {
     return;
   }
 
-  // Hide previous download results.
-  results.hidden = true;
-  downloadBtn.hidden = true;
-  completedUploadId = null;
+  hideDownloads();
 
   const audioFile = audioInput.files[0];
   const bpm = Number(bpmInput.value);
@@ -375,7 +470,7 @@ form.addEventListener("submit", async (event) => {
       );
     }
 
-    // Step 2: Automatically trigger GitHub Actions.
+    // Step 2: Trigger GitHub Actions.
     stage = "generate";
 
     statusText.textContent =
@@ -391,8 +486,8 @@ form.addEventListener("submit", async (event) => {
         },
         body: JSON.stringify({
           uploadId: uploadData.uploadId,
-          bpm: bpm,
-          offset: offset
+          bpm,
+          offset
         })
       }
     );
@@ -406,7 +501,7 @@ form.addEventListener("submit", async (event) => {
       );
     }
 
-    // Step 3: Monitor GitHub Actions progress.
+    // Step 3: Monitor GitHub Actions.
     stage = "monitor";
 
     statusText.textContent =
@@ -438,5 +533,5 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-// Check GitHub login when the page loads.
+hideDownloads();
 checkGitHubLogin();
