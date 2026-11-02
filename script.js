@@ -45,13 +45,14 @@ async function checkGitHubLogin() {
   } catch (error) {
     loggedOut.hidden = false;
     loggedIn.hidden = true;
+    githubUsername.textContent = "";
 
     statusText.textContent =
       "Could not check GitHub login: " + error.message;
   }
 }
 
-// Handle song uploads.
+// Handle song uploads and automatically start AI generation.
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -66,53 +67,100 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (!Number.isFinite(bpm) || bpm <= 0) {
-    statusText.textContent = "Please enter a valid BPM.";
+  if (!Number.isFinite(bpm) || bpm < 30 || bpm > 300) {
+    statusText.textContent =
+      "Please enter a BPM between 30 and 300.";
     return;
   }
 
-  if (!Number.isFinite(offset)) {
+  if (!Number.isFinite(offset) || Math.abs(offset) > 600000) {
     statusText.textContent = "Please enter a valid offset.";
     return;
   }
 
-  // Temporary limit while using Cloudflare Workers KV.
   const MAX_FILE_SIZE = 2 * 1024 * 1024;
 
-  if (audioFile.size > MAX_FILE_SIZE) {
+  if (audioFile.size === 0 || audioFile.size > MAX_FILE_SIZE) {
     statusText.textContent =
       "Please select an MP3 or WAV smaller than 2 MB.";
     return;
   }
 
   generateBtn.disabled = true;
-  statusText.textContent = "Uploading your song to Cloudflare...";
+
+  let uploadCompleted = false;
 
   try {
+    // Step 1: Upload audio to Cloudflare.
+    statusText.textContent =
+      "Uploading your song to Cloudflare...";
+
     const formData = new FormData();
     formData.append("audio", audioFile);
 
-    const response = await fetch(`${API_BASE}/api/upload`, {
+    const uploadResponse = await fetch(`${API_BASE}/api/upload`, {
       method: "POST",
       credentials: "include",
       body: formData
     });
 
-    const data = await response.json();
+    const uploadData = await uploadResponse.json();
 
-    if (!response.ok) {
-      throw new Error(data.error || "Upload failed.");
+    if (!uploadResponse.ok) {
+      throw new Error(uploadData.error || "Upload failed.");
     }
 
+    if (!uploadData.uploadId) {
+      throw new Error("Cloudflare did not return an upload ID.");
+    }
+
+    uploadCompleted = true;
+
+    // Step 2: Automatically trigger GitHub Actions.
     statusText.textContent =
-      `Upload successful! ${data.filename || audioFile.name} ` +
-      `was stored temporarily. ` +
-      `Upload ID: ${data.uploadId || "not returned"}. ` +
-      `AI generation will be connected next.`;
+      "Upload successful! Starting AI beatmap generation...";
+
+    const generateResponse = await fetch(`${API_BASE}/api/generate`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        uploadId: uploadData.uploadId,
+        bpm: bpm,
+        offset: offset
+      })
+    });
+
+    const generateData = await generateResponse.json();
+
+    if (!generateResponse.ok) {
+      throw new Error(
+        generateData.error ||
+        "Could not start AI beatmap generation."
+      );
+    }
+
+    // Step 3: Confirm GitHub Actions was triggered.
+    statusText.textContent =
+      "AI beatmap generation started! " +
+      "GitHub Actions is processing your song. " +
+      "Generation usually takes a few minutes.";
+
+    console.log("Beatmap generation requested:", {
+      uploadId: uploadData.uploadId,
+      filename: uploadData.filename,
+      bpm,
+      offset
+    });
 
   } catch (error) {
     statusText.textContent =
-      "Upload failed: " + error.message;
+      (uploadCompleted
+        ? "AI generation failed to start: "
+        : "Upload failed: ") +
+      error.message;
 
   } finally {
     generateBtn.disabled = false;
