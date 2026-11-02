@@ -126,18 +126,18 @@ async function monitorGeneration(uploadId) {
       switch (data.status) {
         case "queued":
           statusText.textContent =
-            "⏳ Beatmap queued! Waiting for GitHub Actions...";
+            "Beatmap queued! Waiting for GitHub Actions...";
           break;
 
         case "generating":
           statusText.textContent =
-            "🎵 Generating your beatmap with MERT + DDPM. " +
+            "Generating your beatmap with MERT + DDPM. " +
             "This usually takes a few minutes...";
           break;
 
         case "completed":
           statusText.textContent =
-            "✅ Beatmap generation completed successfully! " +
+            "Beatmap generation completed successfully! " +
             "Download buttons will be connected next.";
 
           console.log("Completed GitHub Actions run:", data.runId);
@@ -145,7 +145,7 @@ async function monitorGeneration(uploadId) {
 
         case "failed":
           statusText.textContent =
-            "❌ Beatmap generation failed. Check GitHub Actions logs.";
+            "Beatmap generation failed. Check GitHub Actions logs.";
           return;
 
         default:
